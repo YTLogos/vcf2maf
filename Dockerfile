@@ -1,67 +1,40 @@
-FROM ubuntu:14.04
-RUN apt-get update && apt-get install -y \
-	autoconf \
-	automake \
-	make \
-	g++ \
-	gcc \
-	build-essential \ 
-	zlib1g-dev \
-	libgsl0-dev \
-	perl \
-	curl \
-	git \
-	wget \
-	unzip \
-	tabix \
-	libncurses5-dev
+FROM clearlinux:latest AS builder
 
-RUN apt-get install -y cpanminus
-RUN apt-get install -y libmysqlclient-dev
-RUN cpanm CPAN::Meta \
-	Archive::Zip \
-	DBI \
-	DBD::mysql \ 
-	JSON \
-	DBD::SQLite \
-	Set::IntervalTree \
-	LWP \
-	LWP::Simple \
-	Archive::Extract \
-	Archive::Tar \
-	Archive::Zip \
-	CGI \
-	Time::HiRes \
-	Encode \
-	File::Copy::Recursive \
-	Perl::OSType \
-	Module::Metadata version \
-	Bio::Root::Version \
-	TAP::Harness \
-	Module::Build
+# Install a minimal versioned OS into /install_root, and bundled tools if any
+ENV CLEAR_VERSION=32820
+RUN swupd os-install --no-progress --no-boot-update --no-scripts \
+    --version ${CLEAR_VERSION} \
+    --path /install_root \
+    --statedir /swupd-state \
+    --bundles os-core-update,which
 
+# Download and install conda into /usr/bin
+ENV MINICONDA_VERSION=py38_4.8.2
+RUN swupd bundle-add --no-progress curl && \
+    curl -sL https://repo.anaconda.com/miniconda/Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh -o /tmp/miniconda.sh && \
+    sh /tmp/miniconda.sh -bfp /usr
+
+# Use conda to install remaining tools/dependencies into /usr/local
+ENV VEP_VERSION=99.2 \
+    HTSLIB_VERSION=1.9 \
+    BCFTOOLS_VERSION=1.9 \
+    SAMTOOLS_VERSION=1.9
+RUN conda create -qy -p /usr/local \
+        -c conda-forge \
+        -c bioconda \
+        -c defaults \
+        ensembl-vep==${VEP_VERSION} \
+        htslib==${HTSLIB_VERSION} \
+        bcftools==${BCFTOOLS_VERSION} \
+        samtools==${SAMTOOLS_VERSION}
+
+# Deploy the minimal OS and tools into a clean target layer
+FROM scratch
+
+LABEL maintainer="Cyriac Kandoth <ckandoth@gmail.com>"
+
+COPY --from=builder /install_root /
+COPY --from=builder /usr/local /usr/local
+COPY data /opt/data
+COPY *.pl /opt/
 WORKDIR /opt
-RUN wget https://github.com/samtools/samtools/releases/download/1.3/samtools-1.3.tar.bz2
-RUN tar jxf samtools-1.3.tar.bz2
-WORKDIR /opt/samtools-1.3
-RUN make
-RUN make install
-
-WORKDIR /opt
-RUN rm samtools-1.3.tar.bz2
-
-RUN wget https://github.com/Ensembl/ensembl-tools/archive/release/85.zip
-RUN mkdir variant_effect_predictor_85
-RUN mkdir variant_effect_predictor_85/cache
-RUN unzip 85.zip -d variant_effect_predictor_85
-RUN rm 85.zip 
-WORKDIR /opt/variant_effect_predictor_85/ensembl-tools-release-85/scripts/variant_effect_predictor/
-RUN perl INSTALL.pl --AUTO ap --PLUGINS LoF --CACHEDIR /opt/variant_effect_predictor_85/cache
-WORKDIR /opt/variant_effect_predictor_85/cache/Plugins
-RUN wget https://raw.githubusercontent.com/konradjk/loftee/v0.3-beta/splice_module.pl
-
-WORKDIR /opt
-ADD . /opt/vcf2maf 
-
-COPY Dockerfile /opt/
-MAINTAINER Michele Mattioni, Seven Bridges, <michele.mattioni@sbgenomics.com>
